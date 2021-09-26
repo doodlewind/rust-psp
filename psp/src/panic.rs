@@ -204,21 +204,36 @@ pub fn catch_unwind<R, F: FnOnce() -> R>(f: F) -> Result<R, Box<dyn Any + Send>>
 // TODO: Patch these out of libunwind instead.
 #[cfg(all(target_os = "psp", not(feature = "stub-only")))]
 mod libunwind_shims {
+    use cstr_core::CStr;
+
     #[no_mangle]
     unsafe extern "C" fn fprintf(_stream: *const u8, _format: *const u8, ...) -> isize {
+        dprintln!("error fprintf!");
         -1
     }
 
+    /*
     #[no_mangle]
     unsafe extern "C" fn fflush(_stream: *const u8) -> i32 {
         -1
     }
+    */
 
     #[no_mangle]
     unsafe extern "C" fn abort() {
+        dprintln!("abort..");
         loop { llvm_asm!("" :::: "volatile"); }
     }
 
+    #[no_mangle]
+    pub extern "C" fn debug_log(msg: *const i8, b: i32) {
+      unsafe {
+        let str = CStr::from_ptr(msg).to_str().unwrap();
+        dprintln!("debug: {} {}", str, b);
+      }
+    }
+
+    /*
     #[no_mangle]
     unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
         use alloc::alloc::{alloc, Layout};
@@ -251,4 +266,5 @@ mod libunwind_shims {
 
     #[no_mangle]
     static _impure_ptr: [usize; 0] = [];
+    */
 }

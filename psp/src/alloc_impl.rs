@@ -58,6 +58,7 @@ static ALLOC: SystemAlloc = SystemAlloc;
 #[alloc_error_handler]
 fn aeh(_: Layout) -> ! { loop {} }
 
+/*
 #[no_mangle]
 #[cfg(not(feature = "stub-only"))]
 unsafe extern fn memset(ptr: *mut u8, value: u32, num: usize) -> *mut u8 {
@@ -107,3 +108,4 @@ unsafe extern fn memmove(dst: *mut u8, src: *mut u8, num: isize) -> *mut u8 {
 
     dst
 }
+*/
