@@ -218,13 +218,18 @@ fn main() {
         Err(_) => "build-std=core,compiler_builtins,alloc,panic_unwind,panic_abort",
     };
 
+    let target = env::var("RUST_PSP_TARGET").unwrap_or_else(|_| "mipsel-sony-psp".to_string());
+    let json_target = target.ends_with(".json");
+
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let mut build_process = Command::new(&cargo)
-        .arg("build")
-        .arg("-Z")
-        .arg(build_std_flag)
+    let mut build_command = Command::new(&cargo);
+    build_command.arg("build").arg("-Z").arg(build_std_flag);
+    if json_target {
+        build_command.arg("-Z").arg("json-target-spec");
+    }
+    let mut build_process = build_command
         .arg("--target")
-        .arg("mipsel-sony-psp")
+        .arg(&target)
         .arg("--message-format=json-render-diagnostics")
         .args(args)
         .stdout(Stdio::piped())
@@ -260,7 +265,7 @@ fn main() {
             .iter()
             .filter(|p| workspace_members.contains(&p.id))
             .flat_map(|p| &p.targets)
-            .filter(|t| t.crate_types.iter().any(|ct| *ct == "bin".into()))
+            .filter(|t| t.is_bin())
             .count();
 
         total_executables == 1

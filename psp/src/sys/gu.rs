@@ -85,6 +85,7 @@ bitflags::bitflags! {
     /// The vertex type decides how the vertices align and what kind of
     /// information they contain.
     #[repr(transparent)]
+    #[derive(Clone, Copy)]
     pub struct VertexType: i32 {
         /// 8-bit texture coordinates
         const TEXTURE_8BIT = 1;

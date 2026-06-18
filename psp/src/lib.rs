@@ -2,7 +2,13 @@
     stable_features,
     internal_features,
     clippy::bad_bit_mask,
-    clippy::missing_safety_doc
+    clippy::missing_safety_doc,
+    non_snake_case,
+    static_mut_refs,
+    unexpected_cfgs,
+    unnecessary_transmutes,
+    unused_features,
+    unused_unsafe
 )]
 #![feature(
     asm_experimental_arch,

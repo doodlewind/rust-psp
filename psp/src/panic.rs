@@ -232,7 +232,7 @@ unsafe extern "C" fn rust_eh_personality() {}
 #[cfg(all(target_os = "psp", not(feature = "stub-only")))]
 mod libunwind_shims {
     #[no_mangle]
-    unsafe extern "C" fn fprintf(_stream: *const u8, _format: *const u8, ...) -> isize {
+    unsafe extern "C" fn fprintf(_stream: *const u8, _format: *const u8, _: ...) -> isize {
         -1
     }
 
@@ -249,6 +249,7 @@ mod libunwind_shims {
         }
     }
 
+    #[cfg(not(feature = "external-c-heap"))]
     #[no_mangle]
     unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
         use alloc::alloc::{alloc, Layout};
@@ -261,6 +262,7 @@ mod libunwind_shims {
         data.offset(4)
     }
 
+    #[cfg(not(feature = "external-c-heap"))]
     #[no_mangle]
     unsafe extern "C" fn free(data: *mut u8) {
         use alloc::alloc::{dealloc, Layout};
