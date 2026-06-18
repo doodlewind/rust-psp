@@ -124,7 +124,6 @@ fn update_panic_count(amt: isize) -> usize {
 #[allow(improper_ctypes)]
 extern "C" {
     fn __rust_panic_cleanup(payload: *mut u8) -> *mut (dyn Any + Send + 'static);
-    #[unwind(allowed)]
     fn __rust_start_panic(payload: usize) -> u32;
 }
 

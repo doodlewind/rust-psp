@@ -7,13 +7,12 @@
     core_intrinsics,
     const_loop,
     const_if_match,
-    const_generics,
     c_variadic,
     lang_items,
 )]
 
 // For unwinding support
-#![feature(std_internals, panic_info_message, panic_internals, unwind_attributes)]
+#![feature(std_internals, panic_info_message, panic_internals)]
 #![cfg_attr(not(feature = "stub-only"), feature(panic_unwind))]
 
 // For the `const_generics` feature.
