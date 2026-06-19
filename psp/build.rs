@@ -5,7 +5,7 @@ fn main() {
     println!("cargo:rerun-if-changed=libunwind.a");
     println!("cargo:rerun-if-env-changed=RUSTFLAGS");
 
-    if env::var("CARGO_FEATURE_STUB_ONLY").is_ok() {
+    if env::var("CARGO_FEATURE_STUB_ONLY").is_ok() || env::var("CARGO_FEATURE_ABORT_ONLY").is_ok() {
         return;
     }
 

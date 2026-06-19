@@ -23,7 +23,10 @@
 )]
 // For unwinding support
 #![feature(std_internals, panic_info_message, panic_internals, c_unwind)]
-#![cfg_attr(not(feature = "stub-only"), feature(panic_unwind))]
+#![cfg_attr(
+    all(not(feature = "stub-only"), not(feature = "abort-only")),
+    feature(panic_unwind)
+)]
 #![cfg_attr(feature = "std", feature(psp_std))]
 // For the `const_generics` feature.
 #![allow(incomplete_features)]
@@ -33,7 +36,7 @@
 extern crate paste;
 #[cfg(not(feature = "stub-only"))]
 extern crate alloc;
-#[cfg(not(feature = "stub-only"))]
+#[cfg(all(not(feature = "stub-only"), not(feature = "abort-only")))]
 extern crate panic_unwind;
 
 #[macro_use]
@@ -94,7 +97,11 @@ extern "C" fn __rust_foreign_exception() -> ! {
 #[cfg(feature = "std")]
 pub use std::panic::catch_unwind;
 
-#[cfg(all(not(feature = "std"), not(feature = "stub-only")))]
+#[cfg(all(
+    not(feature = "std"),
+    not(feature = "stub-only"),
+    not(feature = "abort-only")
+))]
 pub use panic::catch_unwind;
 
 #[cfg(feature = "embedded-graphics")]
@@ -148,7 +155,7 @@ macro_rules! _start {
         unsafe { $crate::c_main($argc as _, $argv as _) as _ }
     };
 }
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), not(feature = "abort-only")))]
 #[doc(hidden)]
 #[macro_export]
 macro_rules! _start {
@@ -178,6 +185,40 @@ macro_rules! _start {
 
         // TODO: Maybe print any error to debug screen?
         let _ = $crate::catch_unwind($psp_main);
+
+        0
+    }};
+}
+
+#[cfg(all(not(feature = "std"), feature = "abort-only"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! _start {
+    ($psp_main:expr, $argc:expr, $argv:expr) => {{
+        unsafe fn init_cwd(arg0: *mut u8) {
+            let mut len = 0;
+            while *arg0.add(len) != 0 {
+                len += 1;
+            }
+
+            // Truncate until last '/'
+            while len > 0 && *arg0.add(len - 1) != b'/' {
+                len -= 1;
+            }
+
+            if len > 0 {
+                let tmp = *arg0.add(len);
+                *arg0.add(len) = 0;
+                $crate::sys::sceIoChdir(arg0 as *const u8);
+                *arg0.add(len) = tmp;
+            }
+        }
+
+        if $argc > 0 {
+            unsafe { init_cwd($argv as *mut u8) };
+        }
+
+        $psp_main();
 
         0
     }};
