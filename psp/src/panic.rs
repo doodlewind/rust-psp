@@ -6,18 +6,23 @@
 #[cfg(not(feature = "std"))]
 use crate::sys;
 
-#[cfg(feature = "std")]
+#[cfg(all(not(feature = "std"), feature = "abort-only"))]
+use core::panic::PanicInfo;
+#[cfg(all(feature = "std", not(feature = "abort-only")))]
 use core::{any::Any, mem::ManuallyDrop};
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), not(feature = "abort-only")))]
 use core::{
     any::Any,
     mem::{self, ManuallyDrop},
     panic::{Location, PanicInfo, PanicMessage, PanicPayload as BoxMeUp},
 };
 
+#[cfg(all(not(feature = "std"), not(feature = "abort-only")))]
+use alloc::boxed::Box;
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, string::String};
+use alloc::string::String;
 
+#[cfg(not(feature = "abort-only"))]
 #[link(name = "unwind", kind = "static")]
 extern "C" {}
 
@@ -32,15 +37,41 @@ fn print_and_die(s: String) -> ! {
 }
 
 #[cfg(not(feature = "std"))]
+#[no_mangle]
+unsafe extern "C" fn _exit(status: i32) -> ! {
+    sys::sceKernelExitDeleteThread(status);
+    core::intrinsics::unreachable()
+}
+
+#[cfg(all(not(feature = "std"), not(feature = "abort-only")))]
 #[panic_handler]
 #[inline(never)]
 fn panic(info: &PanicInfo) -> ! {
     panic_impl(info)
 }
 
+#[cfg(all(not(feature = "std"), feature = "abort-only"))]
+#[panic_handler]
+#[inline(never)]
+fn panic(info: &PanicInfo) -> ! {
+    let message = info.message().as_str().unwrap_or_default();
+    let message = match info.location() {
+        Some(location) => alloc::format!(
+            "panicked at {}:{}:{}: {}",
+            location.file(),
+            location.line(),
+            location.column(),
+            message
+        ),
+        None => alloc::format!("panicked: {}", message),
+    };
+
+    print_and_die(message)
+}
+
 #[inline(always)]
 #[cfg_attr(not(target_os = "psp"), allow(unused))]
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), not(feature = "abort-only")))]
 fn panic_impl(info: &PanicInfo) -> ! {
     use core::fmt;
 
@@ -103,7 +134,7 @@ fn panic_impl(info: &PanicInfo) -> ! {
 /// Executes the primary logic for a panic, including checking for recursive
 /// panics, panic hooks, and finally dispatching to the panic runtime to either
 /// abort or unwind.
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), not(feature = "abort-only")))]
 fn rust_panic_with_hook(payload: &mut dyn BoxMeUp) -> ! {
     let panics = update_panic_count(1);
 
@@ -125,6 +156,7 @@ fn rust_panic_with_hook(payload: &mut dyn BoxMeUp) -> ! {
     rust_panic(payload)
 }
 
+#[cfg(not(feature = "abort-only"))]
 fn update_panic_count(amt: isize) -> usize {
     // TODO: Make this thread local
     static mut PANIC_COUNT: usize = 0;
@@ -135,12 +167,14 @@ fn update_panic_count(amt: isize) -> usize {
     }
 }
 
+#[cfg(not(feature = "abort-only"))]
 #[allow(improper_ctypes)]
 extern "C" {
     #[cfg_attr(not(bootstrap), rustc_std_internal_symbol)]
     fn __rust_panic_cleanup(payload: *mut u8) -> *mut (dyn Any + Send + 'static);
 }
 
+#[cfg(not(feature = "abort-only"))]
 #[allow(improper_ctypes)]
 extern "C-unwind" {
     #[cfg_attr(not(bootstrap), rustc_std_internal_symbol)]
@@ -149,7 +183,7 @@ extern "C-unwind" {
 
 #[inline(never)]
 #[no_mangle]
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), not(feature = "abort-only")))]
 fn rust_panic(msg: &mut dyn BoxMeUp) -> ! {
     let code = unsafe {
         let obj = msg;
@@ -159,7 +193,7 @@ fn rust_panic(msg: &mut dyn BoxMeUp) -> ! {
     print_and_die(alloc::format!("failed to initiate panic, error {}", code))
 }
 
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), not(feature = "abort-only")))]
 #[cfg_attr(not(bootstrap), rustc_std_internal_symbol)]
 extern "C" fn __rust_drop_panic() -> ! {
     print_and_die("Rust panics must be rethrown".into());
@@ -167,6 +201,7 @@ extern "C" fn __rust_drop_panic() -> ! {
 
 /// Invoke a closure, capturing the cause of an unwinding panic if one occurs.
 #[inline(never)]
+#[cfg(not(feature = "abort-only"))]
 pub fn catch_unwind<R, F: FnOnce() -> R>(f: F) -> Result<R, Box<dyn Any + Send>> {
     // This whole function is directly lifted out of rustc. See comments there
     // for an explanation of how this actually works.
@@ -222,14 +257,18 @@ pub fn catch_unwind<R, F: FnOnce() -> R>(f: F) -> Result<R, Box<dyn Any + Send>>
 // TODO: EH personality was moved from the panic_unwind crate to std in
 // https://github.com/rust-lang/rust/pull/92845. This no-op implementation
 // should be replaced with the version from std when using no_std.
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), not(feature = "abort-only")))]
 #[lang = "eh_personality"]
 unsafe extern "C" fn rust_eh_personality() {}
 
 /// These symbols and functions should not actually be used. `libunwind`,
 /// however, requires them to be present so that it can link.
 // TODO: Patch these out of libunwind instead.
-#[cfg(all(target_os = "psp", not(feature = "stub-only")))]
+#[cfg(all(
+    target_os = "psp",
+    not(feature = "stub-only"),
+    not(feature = "abort-only")
+))]
 mod libunwind_shims {
     #[no_mangle]
     unsafe extern "C" fn fprintf(_stream: *const u8, _format: *const u8, _: ...) -> isize {

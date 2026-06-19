@@ -22,6 +22,9 @@ std = []
 # library for other projects.
 stub-only = []
 external-c-heap = []
+# Build without panic unwinding support. This keeps no_std PSP apps on
+# panic_abort and avoids building/linking panic_unwind + libunwind.
+abort-only = []
 embedded-graphics = [ "dep:embedded-graphics-core" ]
 
 [dependencies]

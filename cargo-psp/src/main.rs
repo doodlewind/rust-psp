@@ -210,10 +210,17 @@ fn main() {
     // Skip `cargo psp`
     let args = env::args().skip(2);
 
+    let abort_only = env::var("RUST_PSP_ABORT_ONLY").is_ok();
     let build_std_flag = match env::var("RUST_PSP_BUILD_STD") {
         Ok(_) => {
             eprintln!("[NOTE]: Detected RUST_PSP_BUILD_STD env var, using \"build-std\".");
             "build-std"
+        }
+        Err(_) if abort_only => {
+            eprintln!(
+                "[NOTE]: Detected RUST_PSP_ABORT_ONLY env var, excluding panic_unwind from build-std."
+            );
+            "build-std=core,compiler_builtins,alloc,panic_abort"
         }
         Err(_) => "build-std=core,compiler_builtins,alloc,panic_unwind,panic_abort",
     };
@@ -223,6 +230,13 @@ fn main() {
 
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut build_command = Command::new(&cargo);
+    if abort_only {
+        let rustflags = match env::var("RUSTFLAGS") {
+            Ok(value) if !value.is_empty() => format!("{} -C panic=abort", value),
+            _ => "-C panic=abort".to_string(),
+        };
+        build_command.env("RUSTFLAGS", rustflags);
+    }
     build_command.arg("build").arg("-Z").arg(build_std_flag);
     if json_target {
         build_command.arg("-Z").arg("json-target-spec");
