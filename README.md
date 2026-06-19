@@ -56,7 +56,7 @@ implementations of graphics functions, and the addition of missing libraries.
 ## Dependencies
 
 To compile for the PSP, you will need a Rust **nightly** version equal to or
-later than `2020-06-05` and the `rust-src` component. Please install Rust using
+later than `2025-03-19` and the `rust-src` component. Please install Rust using
 https://rustup.rs/
 
 Use the following if you are new to Rust. (Feel free to set an override manually
@@ -109,8 +109,14 @@ usage guides for those programs.
 
 ### Debugging
 
-`psp-gdb` is currently too old to support printing Rust types. `rust-lldb` may
-be possible but it has not be experimented with yet.
+Using the latest version of psplink and psp-gdb from the [pspdev github organization](https://github.com/pspdev) (`psplinkusb v3.1.0 and GNU gdb (GDB) 11.0.50.20210718-git` or later), Rust types are fully supported, providing a rich debugging experience. Enable debug symbols in your release binaries
+
+`Cargo.toml`
+```toml
+[profile.release]
+debug = true
+```
+and follow the instructions in part 6 of [the PSPlink manual](https://usermanual.wiki/Document/psplinkmanual.1365336729/)
 
 ## Usage
 
@@ -151,12 +157,7 @@ xmb_background_png = "path/to/24bit_480x272_background.png"
 xmb_music_at3 = "path/to/ATRAC3_audio.at3"
 ```
 
-More options can be found in the schema defintion [here](/cargo-psp/src/main.rs#L11-L91).
-
-## Known Bugs
-
-This crate **breaks** on builds with `opt-level=0`. Likely due to a bug in EABI
-interop. `cargo-psp` patches over this by passing `-C opt-level=3`.
+More options can be found in the schema defintion [here](/cargo-psp/src/main.rs#L18-L100).
 
 ## `error[E0460]: found possibly newer version of crate ...`
 

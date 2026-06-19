@@ -1,10 +1,16 @@
-use cargo_metadata::MetadataCommand;
-use rustc_version::{Version, Channel};
+use cargo_metadata::{
+    semver::{BuildMetadata, Prerelease},
+    Message as CargoMessage, MetadataCommand,
+};
+use rustc_version::{Channel, Version};
 use std::{
-    env, fs, fmt,
+    collections::HashSet,
+    env, fmt, fs,
     io::ErrorKind,
     process::{self, Command, Stdio},
 };
+
+mod fix_imports;
 
 const CONFIG_NAME: &str = "Psp.toml";
 
@@ -102,7 +108,7 @@ struct CommitDate {
 
 impl CommitDate {
     fn parse(date: &str) -> Option<Self> {
-        let mut iter = date.split("-");
+        let mut iter = date.split('-');
 
         let year = iter.next()?.parse().ok()?;
         let month = iter.next()?.parse().ok()?;
@@ -118,13 +124,32 @@ impl fmt::Display for CommitDate {
     }
 }
 
-const MINIMUM_COMMIT_DATE: CommitDate = CommitDate { year: 2020, month: 06, day: 04 };
+impl core::ops::Add<CommitDate> for CommitDate {
+    type Output = CommitDate;
+
+    fn add(self, rhs: CommitDate) -> Self::Output {
+        Self {
+            year: self.year + rhs.year,
+            month: self.month + rhs.month,
+            day: self.day + rhs.day,
+        }
+    }
+}
+
+// Minimum 2023-03-27, remember to update both commit date and version too,
+// below. Note that the `day` field lags by one day, as the toolchain always
+// contains the previous days' nightly rustc.
+const MINIMUM_COMMIT_DATE: CommitDate = CommitDate {
+    year: 2025,
+    month: 3,
+    day: 18,
+};
 const MINIMUM_RUSTC_VERSION: Version = Version {
     major: 1,
-    minor: 45,
+    minor: 87,
     patch: 0,
-    pre: Vec::new(),
-    build: Vec::new(),
+    pre: Prerelease::EMPTY,
+    build: BuildMetadata::EMPTY,
 };
 
 fn main() {
@@ -139,32 +164,38 @@ fn main() {
         process::exit(1);
     }
 
-    let old_version = MINIMUM_RUSTC_VERSION > Version {
-        // Remove `-nightly` pre-release tag for comparison.
-        pre: Vec::new(),
-        ..rustc_version.semver.clone()
-    };
+    let old_version = MINIMUM_RUSTC_VERSION
+        > Version {
+            // Remove `-nightly` pre-release tag for comparison.
+            pre: Prerelease::EMPTY,
+            ..rustc_version.semver.clone()
+        };
 
     let old_commit = match rustc_version.commit_date {
         None => false,
-        Some(date) => MINIMUM_COMMIT_DATE > CommitDate::parse(&date)
-            .expect("could not parse `rustc --version` commit date"),
+        Some(date) => {
+            MINIMUM_COMMIT_DATE
+                > CommitDate::parse(&date).expect("could not parse `rustc --version` commit date")
+        }
     };
 
     if old_version || old_commit {
         println!(
             "cargo-psp requires rustc nightly version >= {}",
-            MINIMUM_COMMIT_DATE,
+            MINIMUM_COMMIT_DATE
+                + CommitDate {
+                    year: 0,
+                    month: 0,
+                    day: 1
+                },
         );
-        println!(
-            "Please run `rustup update nightly` to upgrade your nightly version"
-        );
+        println!("Please run `rustup update nightly` to upgrade your nightly version");
 
         process::exit(1);
     }
 
-    let config = match fs::read(CONFIG_NAME) {
-        Ok(bytes) => match toml::from_slice(&bytes) {
+    let config = match fs::read_to_string(CONFIG_NAME) {
+        Ok(value) => match toml::from_str(&value) {
             Ok(config) => config,
             Err(e) => {
                 println!("Failed to read Psp.toml: {}", e);
@@ -172,7 +203,6 @@ fn main() {
                 process::exit(1);
             }
         },
-
         Err(e) if e.kind() == ErrorKind::NotFound => PspConfig::default(),
         Err(e) => panic!("{}", e),
     };
@@ -184,139 +214,163 @@ fn main() {
         Ok(_) => {
             eprintln!("[NOTE]: Detected RUST_PSP_BUILD_STD env var, using \"build-std\".");
             "build-std"
-        },
-        Err(_) => {
-            "build-std=core,compiler_builtins,alloc,panic_unwind"
-        },
+        }
+        Err(_) => "build-std=core,compiler_builtins,alloc,panic_unwind,panic_abort",
     };
 
-    // FIXME: This is a workaround. This should eventually be removed.
-    let rustflags = env::var("RUSTFLAGS").unwrap_or("".into())
-        + " -C link-dead-code -C opt-level=3";
+    let target = env::var("RUST_PSP_TARGET").unwrap_or_else(|_| "mipsel-sony-psp".to_string());
+    let json_target = target.ends_with(".json");
 
-    let mut process = Command::new("cargo")
-        .arg("build")
-        .arg("-Z")
-        .arg(build_std_flag)
+    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut build_command = Command::new(&cargo);
+    build_command.arg("build").arg("-Z").arg(build_std_flag);
+    if json_target {
+        build_command.arg("-Z").arg("json-target-spec");
+    }
+    let mut build_process = build_command
         .arg("--target")
-        .arg("mipsel-sony-psp")
+        .arg(&target)
+        .arg("--message-format=json-render-diagnostics")
         .args(args)
-        .env("RUSTFLAGS", rustflags)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stdout(Stdio::piped())
         .spawn()
         .unwrap();
 
-    let status = process.wait().unwrap();
+    let lone = {
+        let output = Command::new(cargo)
+            .arg("metadata")
+            .arg("--format-version=1")
+            .arg("-Z")
+            .arg(build_std_flag)
+            .stderr(Stdio::inherit())
+            .output()
+            .unwrap();
 
-    if !status.success() {
-        let code = match status.code() {
-            Some(i) => i,
-            None => 1,
-        };
+        if !output.status.success() {
+            panic!(
+                "`cargo metadata` command exited with status: {:?}",
+                output.status
+            );
+        }
 
-        process::exit(code);
-    }
+        let metadata = MetadataCommand::parse(
+            std::str::from_utf8(&output.stdout)
+                .expect("`cargo metadata` command returned non UTF-8 bytes"),
+        )
+        .expect("failed to parse `cargo metadata` command's stdout");
 
-    let metadata = MetadataCommand::new()
-        .exec()
-        .expect("failed to get cargo metadata");
+        let workspace_members: HashSet<_> = metadata.workspace_members.iter().collect();
+        let total_executables = metadata
+            .packages
+            .iter()
+            .filter(|p| workspace_members.contains(&p.id))
+            .flat_map(|p| &p.targets)
+            .filter(|t| t.is_bin())
+            .count();
 
-    // Is there a better way to do this?
-    let profile_name = if env::args().any(|arg| arg == "--release") {
-        "release"
-    } else {
-        "debug"
+        total_executables == 1
     };
 
-    let bin_dir = metadata
-        .target_directory
-        .join("mipsel-sony-psp")
-        .join(profile_name);
+    let reader = std::io::BufReader::new(build_process.stdout.take().unwrap());
+    let built_executables: Vec<_> = CargoMessage::parse_stream(reader)
+        .flat_map(|msg| match msg.unwrap() {
+            CargoMessage::CompilerArtifact(art) => art.executable,
+            _ => None,
+        })
+        .collect();
 
-    for id in metadata.clone().workspace_members {
-        let package = metadata[&id].clone();
+    let status = build_process.wait().unwrap();
+    if !status.success() {
+        eprintln!("`cargo build` command exited with status: {:?}", status);
+        process::exit(status.code().unwrap_or(1));
+    }
 
-        for target in package.targets {
-            if target.kind.iter().any(|k| k == "bin") {
-                let elf_path = bin_dir.join(&target.name);
-                let prx_path = bin_dir.join(target.name.clone() + ".prx");
+    // TODO: Error if no bin is ever found.
+    for elf_path in built_executables {
+        let prx_path = elf_path.with_extension("prx");
 
-                let sfo_path = bin_dir.join("PARAM.SFO");
-                let pbp_path = bin_dir.join("EBOOT.PBP");
-
-                Command::new("prxgen")
-                    .arg(&elf_path)
-                    .arg(&prx_path)
-                    .stdin(Stdio::inherit())
-                    .stdout(Stdio::inherit())
-                    .stderr(Stdio::inherit())
-                    .output()
-                    .expect("failed to run prxgen");
-
-                let config_args = vec![
-                    ("-s", "DISC_ID", config.disc_id.clone()),
-                    ("-s", "DISC_VERSION", config.disc_version.clone()),
-                    ("-s", "LANGUAGE", config.language.clone()),
-                    ("-d", "PARENTAL_LEVEL", config.parental_level.as_ref().map(u32::to_string)),
-                    ("-s", "PSP_SYSTEM_VER", config.psp_system_ver.clone()),
-                    ("-d", "REGION", config.region.as_ref().map(u32::to_string)),
-                    ("-s", "TITLE_0", config.title_jp.clone()),
-                    ("-s", "TITLE_2", config.title_fr.clone()),
-                    ("-s", "TITLE_3", config.title_es.clone()),
-                    ("-s", "TITLE_4", config.title_de.clone()),
-                    ("-s", "TITLE_5", config.title_it.clone()),
-                    ("-s", "TITLE_6", config.title_nl.clone()),
-                    ("-s", "TITLE_7", config.title_pt.clone()),
-                    ("-s", "TITLE_8", config.title_ru.clone()),
-                    ("-s", "UPDATER_VER", config.updater_version.clone()),
-                ];
-
-                Command::new("mksfo")
-                    // Add the optional config args
-                    .args({
-                        config_args
-                            .into_iter()
-
-                            // Filter through all the values that are not `None`
-                            .filter_map(|(f, k, v)| v.map(|v| (f, k, v)))
-
-                            // Map into 2 arguments, e.g. "-s" "NAME=VALUE"
-                            .flat_map(|(flag, key, value)| vec![
-                                flag.into(),
-                                format!("{}={}", key, value),
-                            ])
-                    })
-                    .arg(config.title.clone().unwrap_or(target.name))
-                    .arg(&sfo_path)
-                    .stdin(Stdio::inherit())
-                    .stdout(Stdio::inherit())
-                    .stderr(Stdio::inherit())
-                    .output()
-                    .expect("failed to run mksfo");
-
-                Command::new("pack-pbp")
-                    .arg(&pbp_path)
-                    .arg(&sfo_path)
-                    .arg(config.xmb_icon_png.clone().unwrap_or("NULL".into()))
-                    .arg(config.xmb_icon_pmf.clone().unwrap_or("NULL".into()))
-                    .arg(
-                        config
-                            .xmb_background_overlay_png
-                            .clone()
-                            .unwrap_or("NULL".into()),
-                    )
-                    .arg(config.xmb_background_png.clone().unwrap_or("NULL".into()))
-                    .arg(config.xmb_music_at3.clone().unwrap_or("NULL".into()))
-                    .arg(&prx_path)
-                    .arg(config.psar.clone().unwrap_or("NULL".into()))
-                    .stdin(Stdio::inherit())
-                    .stdout(Stdio::inherit())
-                    .stderr(Stdio::inherit())
-                    .output()
-                    .expect("failed to run pack-pbp");
+        let [sfo_path, pbp_path] = ["PARAM.SFO", "EBOOT.PBP"].map(|e| {
+            if lone {
+                elf_path.with_file_name(e)
+            } else {
+                elf_path.with_extension(e)
             }
-        }
+        });
+
+        fix_imports::fix(&elf_path);
+
+        let status = Command::new("prxgen")
+            .arg(&elf_path)
+            .arg(&prx_path)
+            .status()
+            .expect("failed to run prxgen");
+
+        assert!(status.success(), "prxgen failed: {}", status);
+
+        let config_args = vec![
+            ("-s", "DISC_ID", config.disc_id.clone()),
+            ("-s", "DISC_VERSION", config.disc_version.clone()),
+            ("-s", "LANGUAGE", config.language.clone()),
+            (
+                "-d",
+                "PARENTAL_LEVEL",
+                config.parental_level.as_ref().map(u32::to_string),
+            ),
+            ("-s", "PSP_SYSTEM_VER", config.psp_system_ver.clone()),
+            ("-d", "REGION", config.region.as_ref().map(u32::to_string)),
+            ("-s", "TITLE_0", config.title_jp.clone()),
+            ("-s", "TITLE_2", config.title_fr.clone()),
+            ("-s", "TITLE_3", config.title_es.clone()),
+            ("-s", "TITLE_4", config.title_de.clone()),
+            ("-s", "TITLE_5", config.title_it.clone()),
+            ("-s", "TITLE_6", config.title_nl.clone()),
+            ("-s", "TITLE_7", config.title_pt.clone()),
+            ("-s", "TITLE_8", config.title_ru.clone()),
+            ("-s", "UPDATER_VER", config.updater_version.clone()),
+        ];
+
+        let status = Command::new("mksfo")
+            // Add the optional config args
+            .args({
+                config_args
+                    .into_iter()
+                    // Filter through all the values that are not `None`
+                    .filter_map(|(f, k, v)| v.map(|v| (f, k, v)))
+                    // Map into 2 arguments, e.g. "-s" "NAME=VALUE"
+                    .flat_map(|(flag, key, value)| vec![flag.into(), format!("{}={}", key, value)])
+            })
+            .arg(
+                config
+                    .title
+                    .as_ref()
+                    .map(|s| s.as_ref())
+                    .or_else(|| elf_path.file_stem())
+                    .unwrap(),
+            )
+            .arg(&sfo_path)
+            .status()
+            .expect("failed to run mksfo");
+
+        assert!(status.success(), "mksfo failed: {}", status);
+
+        let status = Command::new("pack-pbp")
+            .arg(&pbp_path)
+            .arg(&sfo_path)
+            .arg(config.xmb_icon_png.as_deref().unwrap_or("NULL"))
+            .arg(config.xmb_icon_pmf.as_deref().unwrap_or("NULL"))
+            .arg(
+                config
+                    .xmb_background_overlay_png
+                    .as_deref()
+                    .unwrap_or("NULL"),
+            )
+            .arg(config.xmb_background_png.as_deref().unwrap_or("NULL"))
+            .arg(config.xmb_music_at3.as_deref().unwrap_or("NULL"))
+            .arg(&prx_path)
+            .arg(config.psar.as_deref().unwrap_or("NULL"))
+            .status()
+            .expect("failed to run pack-pbp");
+
+        assert!(status.success(), "pack-pbp failed: {}", status);
     }
 }

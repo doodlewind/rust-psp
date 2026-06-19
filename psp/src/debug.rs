@@ -8,18 +8,21 @@ use core::fmt;
 /// Like `println!`, but prints to the PSP screen.
 #[macro_export]
 macro_rules! dprintln {
-    ($($arg:tt)*) => {
-        $crate::debug::print_args(core::format_args!($($arg)*));
-        $crate::debug::print_args(core::format_args!("\n"));
-    }
+    () => {
+        $crate::dprint("\n")
+    };
+    ($($arg:tt)*) => {{
+        $crate::dprint!($($arg)*);
+        $crate::dprint!("\n");
+    }};
 }
 
 /// Like `print!`, but prints to the PSP screen.
 #[macro_export]
 macro_rules! dprint {
-    ($($arg:tt)*) => {
+    ($($arg:tt)*) => {{
         $crate::debug::print_args(core::format_args!($($arg)*))
-    }
+    }}
 }
 
 // TODO: Wrap this in some kind of a mutex.
@@ -57,9 +60,7 @@ impl Font for MsxFont {
 
     fn put_char(x: usize, y: usize, color: u32, c: u8) {
         unsafe {
-            let mut ptr = VRAM_BASE
-                .offset(x as isize)
-                .offset((y * BUFFER_WIDTH) as isize);
+            let mut ptr = VRAM_BASE.add(x + y * BUFFER_WIDTH);
 
             for i in 0..8 {
                 for j in 0..8 {
@@ -70,7 +71,7 @@ impl Font for MsxFont {
                     ptr = ptr.offset(1);
                 }
 
-                ptr = ptr.offset(-8).offset(BUFFER_WIDTH as isize);
+                ptr = ptr.add(BUFFER_WIDTH - 8);
             }
         }
     }
@@ -96,7 +97,7 @@ unsafe fn put_str<T: Font>(s: &[u8], x: usize, y: usize, color: u32) {
     }
 
     for (i, c) in s.iter().enumerate() {
-        if i >= (DISPLAY_WIDTH / T::CHAR_WIDTH) as usize {
+        if i >= (DISPLAY_WIDTH / T::CHAR_WIDTH) {
             break;
         }
 
@@ -192,7 +193,7 @@ impl CharBuffer {
             }
 
             _ => {
-                if self.current_line().len == COLS  {
+                if self.current_line().len == COLS {
                     self.advance();
                 }
 
@@ -204,10 +205,7 @@ impl CharBuffer {
     }
 
     fn lines(&self) -> LineIter<'_> {
-        LineIter {
-            buf: self,
-            pos: 0,
-        }
+        LineIter { buf: self, pos: 0 }
     }
 }
 

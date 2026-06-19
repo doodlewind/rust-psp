@@ -15,12 +15,12 @@ use core::fmt::Arguments;
 pub struct TestRunner<'a> {
     mode: TestRunnerMode,
     failure: bool,
-    failures: Vec<&'a str>
+    failures: Vec<&'a str>,
 }
 
 enum TestRunnerMode {
-    FIFO(SceUid),
-    FILE(SceUid),
+    Fifo(SceUid),
+    File(SceUid),
     Dprintln,
 }
 
@@ -28,7 +28,7 @@ impl<'a> TestRunner<'a> {
     pub fn new_fifo_runner() -> Self {
         let fd = get_test_output_pipe();
         Self {
-            mode: TestRunnerMode::FIFO(fd),
+            mode: TestRunnerMode::Fifo(fd),
             failure: false,
             failures: Vec::new(),
         }
@@ -37,7 +37,7 @@ impl<'a> TestRunner<'a> {
     pub fn new_file_runner() -> Self {
         let fd = get_test_output_file();
         Self {
-            mode: TestRunnerMode::FILE(fd),
+            mode: TestRunnerMode::File(fd),
             failure: false,
             failures: Vec::new(),
         }
@@ -50,7 +50,6 @@ impl<'a> TestRunner<'a> {
             failures: Vec::new(),
         }
     }
-
 
     pub fn run<F: Fn(&mut TestRunner)>(&mut self, f: F) {
         f(self)
@@ -88,6 +87,14 @@ impl<'a> TestRunner<'a> {
         }
     }
 
+    pub fn check_true(&mut self, testcase_name: &'a str, pred: bool) {
+        if pred {
+            self.pass(testcase_name, "True.");
+        } else {
+            self.fail(testcase_name, "False!");
+        }
+    }
+
     pub fn check_large_collection<T>(&mut self, testcase_name: &'a str, l: &[T], r: &[T])
     where
         T: core::fmt::Debug + PartialEq + Eq,
@@ -102,8 +109,7 @@ impl<'a> TestRunner<'a> {
                 );
             }
 
-            let mut i = 0;
-            for (li, ri) in l.iter().zip(r.iter()) {
+            for (i, (li, ri)) in l.iter().zip(r.iter()).enumerate() {
                 if li != ri {
                     self.dbg(
                         testcase_name,
@@ -111,13 +117,9 @@ impl<'a> TestRunner<'a> {
                     );
                     break;
                 }
-                i += 1;
             }
 
-            self.fail(
-                testcase_name,
-                "Collections were not equal!",
-            );
+            self.fail(testcase_name, "Collections were not equal!");
         }
     }
 
@@ -169,25 +171,24 @@ impl<'a> TestRunner<'a> {
 
     pub fn write_args(&self, args: Arguments) {
         match self.mode {
-            TestRunnerMode::FILE(fd) | TestRunnerMode::FIFO(fd) => {
+            TestRunnerMode::File(fd) | TestRunnerMode::Fifo(fd) => {
                 write_to_psp_output_fd(fd, &format!("{}", args));
             }
             TestRunnerMode::Dprintln => {
                 crate::dprintln!("{}", args);
             }
-
         }
     }
 
     fn quit(self) {
         match self.mode {
-            TestRunnerMode::FILE(fd) | TestRunnerMode::FIFO(fd) => {
+            TestRunnerMode::File(fd) | TestRunnerMode::Fifo(fd) => {
                 close_psp_file(fd);
                 quit_game();
             }
-            TestRunnerMode::Dprintln => {
-                loop {}
-            }
+            TestRunnerMode::Dprintln => loop {
+                core::hint::spin_loop()
+            },
         }
     }
 }
@@ -201,11 +202,12 @@ fn get_test_output_pipe() -> SceUid {
         );
         if fd.0 < 0 {
             panic!(
-                "Unable to open pipe for output! \
-                You must create it yourself with `mkfifo`."
+                "Unable to open pipe \"{}\" for output! \
+                You must create it yourself with `mkfifo`.",
+                fd.0
             );
         }
-        return fd;
+        fd
     }
 }
 
@@ -219,7 +221,7 @@ fn get_test_output_file() -> SceUid {
         if fd.0 < 0 {
             panic!("Unable to open file \"{}\" for output!", OUTPUT_FILENAME);
         }
-        return fd;
+        fd
     }
 }
 
@@ -229,11 +231,7 @@ fn psp_filename(filename: &str) -> *const u8 {
 
 fn write_to_psp_output_fd(fd: SceUid, msg: &str) {
     unsafe {
-        sys::sceIoWrite(
-            fd,
-            msg.as_bytes().as_ptr() as *const u8 as *const c_void,
-            msg.len(),
-        );
+        sys::sceIoWrite(fd, msg.as_bytes().as_ptr() as *const c_void, msg.len());
     }
 }
 

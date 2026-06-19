@@ -1,6 +1,6 @@
-use core::{ptr, ffi::c_void};
 use crate::sys::{self, DisplayPixelFormat};
-use crate::{SCREEN_WIDTH, SCREEN_HEIGHT};
+use crate::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use core::{ffi::c_void, ptr};
 
 // RGBA
 const BYTES_PER_PIXEL: usize = 4;
@@ -8,6 +8,7 @@ const BYTES_PER_PIXEL: usize = 4;
 const NUM_PIXELS: usize = (SCREEN_WIDTH * SCREEN_HEIGHT) as usize;
 
 #[repr(C, packed)]
+#[derive(Clone, Copy)]
 struct BmpHeader {
     pub file_type: [u8; 2],
     pub file_size: u32,
@@ -31,9 +32,7 @@ impl BmpHeader {
     const BYTES: usize = core::mem::size_of::<Self>();
 
     fn to_bytes(self) -> [u8; Self::BYTES] {
-        unsafe {
-            core::mem::transmute(self)
-        }
+        unsafe { core::mem::transmute(self) }
     }
 }
 
@@ -47,9 +46,9 @@ fn rgb565_to_bgra(rgb565: u16) -> u32 {
     let rgb565 = rgb565 as u32;
 
     // bbbb bggg gggr rrrr -> 0xffRRGGBB
-    ((rgb565 & 0x1f) << 16) * 0x100 / 0x20
-        | ((rgb565 & 0x7e0) << 3) * 0x100 / 0x40
-        | ((rgb565 & 0xf800) >> 11) * 0x100 / 0x20
+    (((rgb565 & 0x1f) << 16) * 0x100 / 0x20)
+        | (((rgb565 & 0x7e0) << 3) * 0x100 / 0x40)
+        | (((rgb565 & 0xf800) >> 11) * 0x100 / 0x20)
         | 0xff00_0000
 }
 
@@ -57,20 +56,20 @@ fn rgba5551_to_bgra(rgba5551: u16) -> u32 {
     let rgba5551 = rgba5551 as u32;
 
     // abbb bbgg gggr rrrr -> 0xAARRGGBB
-    ((rgba5551 & 0x1f) << 16) * 0x100 / 0x20
-        | ((rgba5551 & 0x3e0) << 3) * 0x100 / 0x20
-        | ((rgba5551 & 0x7c00) >> 10) * 0x100 / 0x20
-        | ((rgba5551 & 0x8000) >> 15) * 0xff00_0000
+    (((rgba5551 & 0x1f) << 16) * 0x100 / 0x20)
+        | (((rgba5551 & 0x3e0) << 3) * 0x100 / 0x20)
+        | (((rgba5551 & 0x7c00) >> 10) * 0x100 / 0x20)
+        | (((rgba5551 & 0x8000) >> 15) * 0xff00_0000)
 }
 
 fn rgba4444_to_bgra(rgba4444: u16) -> u32 {
     let rgba4444 = rgba4444 as u32;
 
     // aaaa bbbb gggg rrrr -> 0xAARRGGBB
-    ((rgba4444 & 0x000f) << 16) * 0x100 / 0x10
-        | ((rgba4444 & 0x00f0) << 4) * 0x100 / 0x10
-        | ((rgba4444 & 0x0f00) >> 8) * 0x100 / 0x10
-        | ((rgba4444 & 0xf000) << 12) * 0x100 / 0x10
+    (((rgba4444 & 0x000f) << 16) * 0x100 / 0x10)
+        | (((rgba4444 & 0x00f0) << 4) * 0x100 / 0x10)
+        | (((rgba4444 & 0x0f00) >> 8) * 0x100 / 0x10)
+        | (((rgba4444 & 0xf000) << 12) * 0x100 / 0x10)
 }
 
 /// Take a screenshot, returning a raw ARGB (big-endian) array.
@@ -110,7 +109,7 @@ pub fn screenshot_argb_be() -> alloc::vec::Vec<u32> {
                     };
 
                     rgba_to_bgra(rgba)
-                },
+                }
 
                 sys::DisplayPixelFormat::Psm5650 => {
                     let rgb565 = unsafe {
@@ -159,8 +158,8 @@ pub fn screenshot_bmp() -> alloc::vec::Vec<u8> {
         reserved_2: 0,
         image_data_start: BmpHeader::BYTES as u32,
         dib_header_size: 40,
-        image_width: SCREEN_WIDTH as u32,
-        image_height: SCREEN_HEIGHT as u32,
+        image_width: SCREEN_WIDTH,
+        image_height: SCREEN_HEIGHT,
         color_planes: 1,
         bpp: 32,
         compression: 0,
@@ -168,7 +167,7 @@ pub fn screenshot_bmp() -> alloc::vec::Vec<u8> {
         print_resolution_x: 2835, // 72 DPI
         print_resolution_y: 2835, // 72 DPI
         palette_color_count: 0,
-        important_colors: 0
+        important_colors: 0,
     };
 
     screenshot_buffer[0..BmpHeader::BYTES].copy_from_slice(&bmp_header.to_bytes());

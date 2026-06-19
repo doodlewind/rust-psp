@@ -7,18 +7,19 @@
 use crate::sys;
 
 #[cfg(feature = "std")]
-use core::{mem::ManuallyDrop, any::Any};
+use core::{any::Any, mem::ManuallyDrop};
 #[cfg(not(feature = "std"))]
-use core::{mem::{self, ManuallyDrop}, any::Any, panic::{PanicInfo, BoxMeUp, Location}};
+use core::{
+    any::Any,
+    mem::{self, ManuallyDrop},
+    panic::{Location, PanicInfo, PanicMessage, PanicPayload as BoxMeUp},
+};
 
 #[cfg(not(feature = "std"))]
-use core::fmt;
-
-#[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, string::{String, ToString}};
+use alloc::{boxed::Box, string::String};
 
 #[link(name = "unwind", kind = "static")]
-extern {}
+extern "C" {}
 
 #[cfg(not(feature = "std"))]
 fn print_and_die(s: String) -> ! {
@@ -41,24 +42,35 @@ fn panic(info: &PanicInfo) -> ! {
 #[cfg_attr(not(target_os = "psp"), allow(unused))]
 #[cfg(not(feature = "std"))]
 fn panic_impl(info: &PanicInfo) -> ! {
+    use core::fmt;
+
     struct PanicPayload<'a> {
-        inner: &'a fmt::Arguments<'a>,
+        message: PanicMessage<'a>,
+        location: &'a Location<'a>,
         string: Option<String>,
     }
 
     impl<'a> PanicPayload<'a> {
-        fn new(inner: &'a fmt::Arguments<'a>) -> PanicPayload<'a> {
-            PanicPayload { inner, string: None }
+        fn new(info: &'a PanicInfo<'a>) -> PanicPayload<'a> {
+            let message = info.message();
+            let location = info.location().unwrap();
+            PanicPayload {
+                message,
+                location,
+                string: None,
+            }
         }
 
         fn fill(&mut self) -> &mut String {
-            use fmt::Write;
-            let inner = self.inner;
-            self.string.get_or_insert_with(|| {
-                let mut s = String::new();
-                drop(s.write_fmt(*inner));
-                s
-            })
+            let s = alloc::format!(
+                "panicked at {}:{}:{}: {}",
+                self.location.file(),
+                self.location.line(),
+                self.location.column(),
+                self.message.as_str().unwrap_or_default()
+            );
+
+            self.string.get_or_insert_with(|| s)
         }
     }
 
@@ -73,9 +85,17 @@ fn panic_impl(info: &PanicInfo) -> ! {
         }
     }
 
-    let loc = info.location().unwrap();
-    let msg = info.message().unwrap();
-    rust_panic_with_hook(&mut PanicPayload::new(msg), info.message(), loc);
+    impl fmt::Display for PanicPayload<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            if let Some(s) = &self.string {
+                s.fmt(f)
+            } else {
+                Err(fmt::Error)
+            }
+        }
+    }
+
+    rust_panic_with_hook(&mut PanicPayload::new(&info));
 }
 
 /// Central point for dispatching panics.
@@ -84,21 +104,15 @@ fn panic_impl(info: &PanicInfo) -> ! {
 /// panics, panic hooks, and finally dispatching to the panic runtime to either
 /// abort or unwind.
 #[cfg(not(feature = "std"))]
-fn rust_panic_with_hook(
-    payload: &mut dyn BoxMeUp,
-    message: Option<&fmt::Arguments<'_>>,
-    location: &Location<'_>,
-) -> ! {
+fn rust_panic_with_hook(payload: &mut dyn BoxMeUp) -> ! {
     let panics = update_panic_count(1);
 
     fn die_nested() -> ! {
         print_and_die("thread panicked while processing panic. aborting.".into());
     }
 
-    let mut info = PanicInfo::internal_constructor(message, location);
-    info.set_payload(payload.get());
-
-    dprintln!("{}", info.to_string());
+    payload.get(); // populate the payload's string
+    dprintln!("{}", payload);
 
     if panics > 1 {
         // If a thread panics while it's already unwinding then we
@@ -123,26 +137,30 @@ fn update_panic_count(amt: isize) -> usize {
 
 #[allow(improper_ctypes)]
 extern "C" {
+    #[cfg_attr(not(bootstrap), rustc_std_internal_symbol)]
     fn __rust_panic_cleanup(payload: *mut u8) -> *mut (dyn Any + Send + 'static);
-    #[unwind(allowed)]
+}
+
+#[allow(improper_ctypes)]
+extern "C-unwind" {
+    #[cfg_attr(not(bootstrap), rustc_std_internal_symbol)]
     fn __rust_start_panic(payload: usize) -> u32;
 }
 
 #[inline(never)]
 #[no_mangle]
 #[cfg(not(feature = "std"))]
-fn rust_panic(mut msg: &mut dyn BoxMeUp) -> ! {
+fn rust_panic(msg: &mut dyn BoxMeUp) -> ! {
     let code = unsafe {
-        let obj = &mut msg as *mut &mut dyn BoxMeUp;
+        let obj = msg;
         panic_unwind::__rust_start_panic(obj as _)
     };
 
     print_and_die(alloc::format!("failed to initiate panic, error {}", code))
 }
 
-#[cfg(not(test))]
-#[no_mangle]
 #[cfg(not(feature = "std"))]
+#[cfg_attr(not(bootstrap), rustc_std_internal_symbol)]
 extern "C" fn __rust_drop_panic() -> ! {
     print_and_die("Rust panics must be rethrown".into());
 }
@@ -159,12 +177,14 @@ pub fn catch_unwind<R, F: FnOnce() -> R>(f: F) -> Result<R, Box<dyn Any + Send>>
         p: ManuallyDrop<Box<dyn Any + Send>>,
     }
 
-    let mut data = Data { f: ManuallyDrop::new(f) };
+    let mut data = Data {
+        f: ManuallyDrop::new(f),
+    };
 
     let data_ptr = &mut data as *mut _ as *mut u8;
 
     return unsafe {
-        if core::intrinsics::r#try(do_call::<F, R>, data_ptr, do_catch::<F, R>) == 0 {
+        if core::intrinsics::catch_unwind(do_call::<F, R>, data_ptr, do_catch::<F, R>) == 0 {
             Ok(ManuallyDrop::into_inner(data.r))
         } else {
             Err(ManuallyDrop::into_inner(data.p))
@@ -199,41 +219,37 @@ pub fn catch_unwind<R, F: FnOnce() -> R>(f: F) -> Result<R, Box<dyn Any + Send>>
     }
 }
 
+// TODO: EH personality was moved from the panic_unwind crate to std in
+// https://github.com/rust-lang/rust/pull/92845. This no-op implementation
+// should be replaced with the version from std when using no_std.
+#[cfg(not(feature = "std"))]
+#[lang = "eh_personality"]
+unsafe extern "C" fn rust_eh_personality() {}
+
 /// These symbols and functions should not actually be used. `libunwind`,
 /// however, requires them to be present so that it can link.
 // TODO: Patch these out of libunwind instead.
 #[cfg(all(target_os = "psp", not(feature = "stub-only")))]
 mod libunwind_shims {
-    use cstr_core::CStr;
-
     #[no_mangle]
-    unsafe extern "C" fn fprintf(_stream: *const u8, _format: *const u8, ...) -> isize {
-        dprintln!("error fprintf!");
+    unsafe extern "C" fn fprintf(_stream: *const u8, _format: *const u8, _: ...) -> isize {
         -1
     }
 
-    /*
     #[no_mangle]
     unsafe extern "C" fn fflush(_stream: *const u8) -> i32 {
         -1
     }
-    */
 
     #[no_mangle]
+    #[allow(deprecated)]
     unsafe extern "C" fn abort() {
-        dprintln!("abort..");
-        loop { llvm_asm!("" :::: "volatile"); }
+        loop {
+            core::arch::asm!("");
+        }
     }
 
-    #[no_mangle]
-    pub extern "C" fn debug_log(msg: *const i8, b: i32) {
-      unsafe {
-        let str = CStr::from_ptr(msg).to_str().unwrap();
-        dprintln!("debug: {} {}", str, b);
-      }
-    }
-
-    /*
+    #[cfg(not(feature = "external-c-heap"))]
     #[no_mangle]
     unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
         use alloc::alloc::{alloc, Layout};
@@ -246,6 +262,7 @@ mod libunwind_shims {
         data.offset(4)
     }
 
+    #[cfg(not(feature = "external-c-heap"))]
     #[no_mangle]
     unsafe extern "C" fn free(data: *mut u8) {
         use alloc::alloc::{dealloc, Layout};
@@ -266,5 +283,4 @@ mod libunwind_shims {
 
     #[no_mangle]
     static _impure_ptr: [usize; 0] = [];
-    */
 }
