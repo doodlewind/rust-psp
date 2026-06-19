@@ -126,6 +126,6 @@ core::arch::global_asm!(
 
             lw $ra, 8($sp)
             addiu $sp, 32
-            jr $ra
+            jr $ra     
     "#
 );
